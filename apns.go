@@ -15,8 +15,8 @@ func NewQueue() Queue {
 	return Queue{}
 }
 
-func (queue Queue) Add(identifier int, token string, payload string) Queue {
-	return append(queue, notification.MakeNotification(identifier, token, payload))
+func (queue Queue) Add(identifier, expiry int, token string, payload string) Queue {
+	return append(queue, notification.MakeNotification(identifier, expiry, token, payload))
 }
 
 func (queue Queue) ResetAfter(identifier uint32) Queue {
@@ -42,6 +42,7 @@ func Connect(host string, certFile string, keyFile string) (*ApnsService, error)
 
 type deadlineReader interface {
 	SetReadDeadline(t time.Time) error
+	SetWriteDeadline(t time.Time) error
 }
 
 type readWriteCloserWithDeadline interface {
@@ -50,16 +51,24 @@ type readWriteCloserWithDeadline interface {
 }
 
 type ApnsService struct {
-	conn readWriteCloserWithDeadline
-	host string
-	conf *tls.Config
+	conn         readWriteCloserWithDeadline
+	dailTimeout  time.Duration
+	writeTimeout time.Duration
+	host         string
+	conf         *tls.Config
 }
 
 // Create a new service with a custom tls.Config.
 // Allows you to load in your own certificates and customize verification behavior
-func NewService(host string, conf *tls.Config) *ApnsService {
-	return &ApnsService{host: host, conf: conf}
+func NewService(host string, conf *tls.Config, dailtimeout, writetimeout time.Duration) *ApnsService {
+	return &ApnsService{host: host, conf: conf, dailTimeout: dailtimeout, writeTimeout: writetimeout}
 }
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "apns: Dial timed out" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
 
 func (service *ApnsService) Connect() (err error) {
 	if service.conn != nil {
@@ -68,13 +77,42 @@ func (service *ApnsService) Connect() (err error) {
 			return
 		}
 	}
-	service.conn, err = tls.Dial("tcp", service.host, service.conf)
-	return
+
+	var errChannel chan error
+
+	if service.dailTimeout != 0 {
+		errChannel = make(chan error, 2)
+		time.AfterFunc(service.dailTimeout, func() {
+			errChannel <- timeoutError{}
+		})
+	}
+	go func() {
+		var dailerr error
+		service.conn, dailerr = tls.Dial("tcp", service.host, service.conf)
+		errChannel <- dailerr
+	}()
+
+	err = <-errChannel
+	if _, ok := err.(timeoutError); ok { //timeout
+		go func() {
+			var dailerr error
+			dailerr = <-errChannel
+			if dailerr == nil && service.conn != nil {
+				service.conn.Close()
+			}
+		}()
+	}
+
+	return err
 }
 
 // Assuming we are already connected, send a single notification through the current connection.
 func (service *ApnsService) SendOne(n notification.Notification) error {
 	notificationBytes, _ := n.Bytes()
+	errconn := service.conn.SetWriteDeadline(time.Now().Add(service.writeTimeout))
+	if errconn != nil {
+		return errconn
+	}
 	_, err := service.conn.Write(notificationBytes)
 	return err
 }

@@ -32,9 +32,9 @@ func DeviceTokenAsBinary(token string) ([32]byte, error) {
 	return b, err
 }
 
-func MakeNotification(identifier int, token string, payload string) Notification {
+func MakeNotification(identifier, expiry int, token string, payload string) Notification {
 	binaryToken, _ := DeviceTokenAsBinary(token)
-	return Notification{Header: header{1, uint32(identifier), 0, 32, binaryToken}, Payload: payload}
+	return Notification{Header: header{1, uint32(identifier), uint32(expiry), 32, binaryToken}, Payload: payload}
 }
 
 func (n *Notification) Bytes() ([]byte, error) {
