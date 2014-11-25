@@ -2,7 +2,7 @@
 
 A work in progress. API will probably change, so if you use this, do the Right Thing and vendor your dependencies.
 
-`go get github.com/pranavraja/apns`
+`go get github.com/vanillar7/apns`
 
 Implements The 'Enhanced Notification Format' (see [Communicating With APS](http://developer.apple.com/library/mac/#documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/CommunicatingWIthAPS/CommunicatingWIthAPS.html#//apple_ref/doc/uid/TP40008194-CH101-SW1)), with handling of 'invalid' notification responses.
 
@@ -33,26 +33,37 @@ import (
 )
 
 func main() {
-    host := os.Getenv("APNS_HOST") // e.g. gateway.push.sandbox.apple.com:2195
-    certFile := os.Getenv("CERT_FILE") // e.g. cert.pem
-    keyFile := os.Getenv("KEY_FILE") // e.g. cert.private.pem
-    service, err := apns.Connect(host, certFile, keyFile)
+    host := "gateway.sandbox.push.apple.com:2195"
+    certFile := "cer_dev.pem"
+    keyFile := "key_dev.unencrypted.pem"
+
+    //get tls config
+    conf := new(tls.Config)
+    cert, err := tls.LoadX509KeyPair(certFile, keyFile)
     if err != nil {
-        panic(err) // Couldn't read certificates, or couldn't connect to Apple for some reason
+        fmt.Printf("LoadX509KeyPair err(%v)\n", err)
     }
-    queue := apns.NewQueue().Add(1, "aef4429b", `{"aps":{"alert":"message"}}`).Add(2, "aef4429b", `{"aps":{"alert":"message"}}`)
-    failureTimeout := 2 * time.Second
+    conf.Certificates = append(conf.Certificates, cert)
 
-    // Send a batch of notifications over a connection. 
-    // When Apple reports an invalid notification in the queue, skip that one, reconnect to APNS, 
-    // and try to re-send the rest, until the queue is exhausted or there is a network error.
-    failures, unsent, err := service.SendAll(queue, failureTimeout)
+    //time.Second*30 : dail timeout
+    //time.Second : write timeout
+    service := apns.NewService(host, conf, time.Second*30, time.Second)
+    err = service.Connect()
+    if err != nil {
+        fmt.Printf("Connect err(%v)\n", err)
+        return 
+    }
 
-    // Alternatively, when Apple reports an invalid notification in the queue, return immediately. 
-    // Report the failure and the items still to be sent. 
-    // The caller should handle re-connecting and attempting to re-send the remaining items.
-    // This is useful if you want to employ a more complex batching strategy for performance reasons
-    // failure, unsent, err := service.Send(queue, failureTimeout)
+    tokenIDs := []string{"tokenID1", "tokenID2"}
+
+    expiry := int(time.Now().AddDate(0, 0, 1).Unix()) //expiry date
+    queue := apns.NewQueue().Add(1, expiry, tokenIDs[0],
+        `{"aps":{"alert":"message"}}`)
+
+    failureTimeout := 5 * time.Second
+    invalid, unsent, err := service.SendAll(queue, failureTimeout)
+
+    fmt.Println(invalid, unsent, err)
 }
 ```
 
